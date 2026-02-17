@@ -1,6 +1,10 @@
-# Household Budget
+<p align="center">
+  <img src="public/icons/icon-192.png" alt="Household Budget" width="96">
+</p>
 
-A simple budget tracker for splitting expenses between two people. Runs as a single-page PWA with a Node.js backend that persists data to a JSON file.
+<h1 align="center">Household Budget</h1>
+
+<p align="center">A simple budget tracker for splitting expenses between two people. Runs as a single-page PWA with a Node.js backend that persists data to a JSON file.</p>
 
 ![Node](https://img.shields.io/badge/node-20--alpine-green) ![Express](https://img.shields.io/badge/express-4.x-lightgrey) ![Docker](https://img.shields.io/badge/docker-compose-blue)
 
