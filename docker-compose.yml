@@ -1,0 +1,15 @@
+services:
+  budget:
+    build: .
+    container_name: household-budget
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    volumes:
+      - budget_data:/data
+    environment:
+      - PORT=3000
+      - DATA_FILE=/data/budget.json
+
+volumes:
+  budget_data:

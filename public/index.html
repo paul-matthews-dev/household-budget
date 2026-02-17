@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0f172a">
+  <title>Household Budget</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💰</text></svg>">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.2/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'DM Sans', sans-serif; background: #0f172a; color: #e2e8f0; -webkit-font-smoothing: antialiased; }
+    .font-mono { font-family: 'JetBrains Mono', monospace; }
+    input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; }
+    input[type="number"] { -moz-appearance: textfield; }
+    input { font-size: 16px !important; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+    .sortable-ghost { opacity: 0.3; }
+    .drag-handle { cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+    .drag-handle:active { cursor: grabbing; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useRef } = React;
+
+    const api = {
+      async load() {
+        const res = await fetch('/api/budget');
+        return res.json();
+      },
+      async save(data) {
+        const res = await fetch('/api/budget', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data),
+        });
+        return res.json();
+      }
+    };
+
+    function currency(n) {
+      return `£${n.toFixed(2)}`;
+    }
+
+    function EditableAmount({ value, onChange, className = "", format = "currency" }) {
+      const [editing, setEditing] = useState(false);
+      const [tempVal, setTempVal] = useState("");
+      const display = (n) => format === "currency" ? currency(n) : n.toFixed(2);
+
+      const startEdit = () => { setTempVal(value.toString()); setEditing(true); };
+      const commit = () => {
+        const parsed = parseFloat(tempVal);
+        if (!isNaN(parsed) && parsed >= 0) onChange(parsed);
+        setEditing(false);
+      };
+
+      if (editing) {
+        return React.createElement('input', {
+          type: 'number', step: '0.01', min: '0', value: tempVal, autoFocus: true,
+          onChange: (e) => setTempVal(e.target.value),
+          onBlur: commit,
+          onKeyDown: (e) => e.key === 'Enter' && commit(),
+          style: { width: 96, background: 'transparent', borderBottom: '2px solid #fbbf24', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", outline: 'none', color: '#f1f5f9', fontSize: 16 },
+          className: className
+        });
+      }
+      return React.createElement('span', {
+        onClick: startEdit,
+        className: `font-mono ${className}`,
+        style: { cursor: 'pointer', transition: 'color 0.15s' },
+        onMouseEnter: (e) => e.target.style.color = '#fcd34d',
+        onMouseLeave: (e) => e.target.style.color = '',
+      }, display(value));
+    }
+
+    function EditableName({ value, onChange }) {
+      const [editing, setEditing] = useState(false);
+      const [tempVal, setTempVal] = useState("");
+
+      const startEdit = () => { setTempVal(value); setEditing(true); };
+      const commit = () => { if (tempVal.trim()) onChange(tempVal.trim()); setEditing(false); };
+
+      if (editing) {
+        return React.createElement('input', {
+          type: 'text', value: tempVal, autoFocus: true,
+          onChange: (e) => setTempVal(e.target.value), onBlur: commit,
+          onKeyDown: (e) => e.key === 'Enter' && commit(),
+          style: { background: 'transparent', borderBottom: '2px solid #fbbf24', outline: 'none', color: '#f1f5f9', width: '100%', fontSize: 16 }
+        });
+      }
+      return React.createElement('span', {
+        onClick: startEdit,
+        style: { cursor: 'pointer', transition: 'color 0.15s' },
+        onMouseEnter: (e) => e.target.style.color = '#fcd34d',
+        onMouseLeave: (e) => e.target.style.color = '',
+      }, value);
+    }
+
+    function EditableSubtitle({ value, onChange, placeholder = "Add detail..." }) {
+      const [editing, setEditing] = useState(false);
+      const [tempVal, setTempVal] = useState("");
+
+      const startEdit = () => { setTempVal(value || ""); setEditing(true); };
+      const commit = () => { onChange(tempVal.trim()); setEditing(false); };
+
+      if (editing) {
+        return React.createElement('input', {
+          type: 'text', value: tempVal, autoFocus: true, placeholder,
+          onChange: (e) => setTempVal(e.target.value), onBlur: commit,
+          onKeyDown: (e) => e.key === 'Enter' && commit(),
+          style: { background: 'transparent', borderBottom: '1px solid #475569', outline: 'none', color: '#64748b', fontSize: 16, width: '100%', marginTop: 2 }
+        });
+      }
+      return React.createElement('div', {
+        onClick: startEdit,
+        style: { fontSize: 12, color: '#64748b', cursor: 'pointer', marginTop: 2, transition: 'color 0.15s' },
+        onMouseEnter: (e) => e.target.style.color = '#fbbf24aa',
+        onMouseLeave: (e) => e.target.style.color = '#64748b',
+      }, value || placeholder);
+    }
+
+    function SwipeToDelete({ onDelete, children }) {
+      const [confirming, setConfirming] = useState(false);
+      const timerRef = useRef(null);
+
+      const handleClick = () => {
+        if (confirming) {
+          clearTimeout(timerRef.current);
+          setConfirming(false);
+          onDelete();
+        } else {
+          setConfirming(true);
+          timerRef.current = setTimeout(() => setConfirming(false), 3000);
+        }
+      };
+
+      useEffect(() => () => clearTimeout(timerRef.current), []);
+
+      return React.createElement('div', { style: { display: 'flex', alignItems: 'stretch' } },
+        React.createElement('div', { style: { flex: 1, minWidth: 0 } }, children),
+        React.createElement('button', {
+          onClick: handleClick, title: confirming ? 'Click again to delete' : 'Remove',
+          style: { padding: '0 10px', color: confirming ? '#fff' : '#f87171', background: confirming ? '#dc2626' : 'none', border: 'none', cursor: 'pointer', opacity: confirming ? 1 : 0.3, fontSize: confirming ? 11 : 14, borderRadius: confirming ? '0 12px 12px 0' : 0, transition: 'all 0.15s', whiteSpace: 'nowrap', flexShrink: 0 },
+          onMouseEnter: (e) => { if (!confirming) e.target.style.opacity = 1; },
+          onMouseLeave: (e) => { if (!confirming) e.target.style.opacity = 0.3; },
+        }, confirming ? 'Delete?' : '✕')
+      );
+    }
+
+    function DragHandle() {
+      return React.createElement('div', {
+        className: 'drag-handle',
+        style: { display: 'flex', flexDirection: 'column', gap: 2, padding: '8px 8px 8px 4px', color: '#475569', fontSize: 10, lineHeight: 1 }
+      },
+        React.createElement('span', { style: { letterSpacing: 2 } }, '··'),
+        React.createElement('span', { style: { letterSpacing: 2 } }, '··'),
+        React.createElement('span', { style: { letterSpacing: 2 } }, '··')
+      );
+    }
+
+    function SortableList({ onReorder, children }) {
+      const containerRef = useRef(null);
+      const sortableRef = useRef(null);
+      const onReorderRef = useRef(onReorder);
+      onReorderRef.current = onReorder;
+
+      useEffect(() => {
+        if (!containerRef.current) return;
+        sortableRef.current = Sortable.create(containerRef.current, {
+          handle: '.drag-handle',
+          animation: 150,
+          ghostClass: 'sortable-ghost',
+          onEnd: (evt) => {
+            const { oldIndex, newIndex, from, item } = evt;
+            if (oldIndex === newIndex) return;
+            item.parentNode.removeChild(item);
+            const ref = from.children[oldIndex];
+            if (ref) from.insertBefore(item, ref);
+            else from.appendChild(item);
+            onReorderRef.current(oldIndex, newIndex);
+          }
+        });
+        return () => { if (sortableRef.current) sortableRef.current.destroy(); };
+      }, []);
+
+      return React.createElement('div', { ref: containerRef, style: { display: 'flex', flexDirection: 'column', gap: 4 } }, children);
+    }
+
+    // CSS-in-JS helpers
+    const s = {
+      card: { borderRadius: 16, padding: 16, border: '1px solid rgba(51,65,85,0.5)', background: 'rgba(30,41,59,0.4)' },
+      cardAccent: (from, to, border) => ({ borderRadius: 16, padding: 16, background: `linear-gradient(135deg, ${from}, ${to})`, border: `1px solid ${border}` }),
+      row: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px', borderRadius: 12, background: 'rgba(30,41,59,0.4)', border: '1px solid rgba(51,65,85,0.3)' },
+      label: { fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#64748b' },
+      tab: (active) => ({ flex: 1, padding: '8px 0', fontSize: 12, fontWeight: 500, borderRadius: 8, border: 'none', cursor: 'pointer', transition: 'all 0.15s', background: active ? 'rgba(245,158,11,0.2)' : 'transparent', color: active ? '#fcd34d' : '#64748b' }),
+      addBtn: (color) => ({ width: '100%', padding: '10px 0', borderRadius: 12, border: '2px dashed #334155', background: 'none', color: '#64748b', fontSize: 14, cursor: 'pointer', transition: 'all 0.15s' }),
+    };
+
+    function App() {
+      const [data, setData] = useState(null);
+      const [loading, setLoading] = useState(true);
+      const [activeTab, setActiveTab] = useState("overview");
+      const [lastSaved, setLastSaved] = useState(null);
+      const saveTimeout = useRef(null);
+
+      useEffect(() => {
+        api.load().then(d => { setData(d); setLoading(false); }).catch(() => setLoading(false));
+      }, []);
+
+      const save = useCallback((newData) => {
+        setData(newData);
+        // Debounce saves to avoid hammering the disk
+        if (saveTimeout.current) clearTimeout(saveTimeout.current);
+        saveTimeout.current = setTimeout(() => {
+          api.save(newData).then(r => { if (r.ok) setLastSaved(new Date()); });
+        }, 500);
+      }, []);
+
+      if (loading || !data) {
+        return React.createElement('div', { style: { minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0f172a' } },
+          React.createElement('div', { style: { color: '#94a3b8', fontSize: 18 } }, 'Loading budget...')
+        );
+      }
+
+      const p1 = data.person1Name || "Person 1";
+      const p2 = data.person2Name || "Person 2";
+      const householdTotal = data.householdBills.reduce((s, b) => s + b.amount, 0);
+      const p1PersonalTotal = (data.person1Expenses || []).reduce((s, e) => s + e.amount, 0);
+      const p2PersonalTotal = (data.person2Expenses || []).reduce((s, e) => s + e.amount, 0);
+      const p1BillShare = householdTotal / 2 + p1PersonalTotal;
+      const p2BillShare = householdTotal / 2 + p2PersonalTotal;
+      const extraIncomeTotal = (data.extraIncome || []).reduce((s, e) => s + e.amount, 0);
+      const totalIncome = (data.person1Pay || 0) + (data.person2Pay || 0) + extraIncomeTotal;
+      const totalExpenditure = householdTotal + p1PersonalTotal + p2PersonalTotal;
+      const totalLeft = totalIncome - totalExpenditure;
+      const p1Left = (data.person1Pay || 0) - p1BillShare;
+      const p2Left = (data.person2Pay || 0) - p2BillShare;
+      const totalSavings = (data.savings || []).reduce((s, a) => s + a.balance, 0);
+      const annualInterest = (data.savings || []).reduce((s, a) => s + a.balance * (a.interestRate / 100), 0);
+      const monthlyInterest = annualInterest / 12;
+
+      const updateBill = (i, field, value) => { const u = { ...data, householdBills: [...data.householdBills] }; u.householdBills[i] = { ...u.householdBills[i], [field]: value }; save(u); };
+      const addBill = () => save({ ...data, householdBills: [...data.householdBills, { name: "New Bill", amount: 0, splitEvenly: true, subtitle: "" }] });
+      const removeBill = (i) => save({ ...data, householdBills: data.householdBills.filter((_, j) => j !== i) });
+      const updatePersonalExpense = (who, i, field, value) => { const key = who + "Expenses"; const u = { ...data, [key]: [...(data[key] || [])] }; u[key][i] = { ...u[key][i], [field]: value }; save(u); };
+      const addPersonalExpense = (who) => { const key = who + "Expenses"; save({ ...data, [key]: [...(data[key] || []), { name: "New Expense", amount: 0, subtitle: "" }] }); };
+      const removePersonalExpense = (who, i) => { const key = who + "Expenses"; save({ ...data, [key]: (data[key] || []).filter((_, j) => j !== i) }); };
+      const updateSavingsAccount = (i, field, value) => { const u = { ...data, savings: [...(data.savings || [])] }; u.savings[i] = { ...u.savings[i], [field]: value }; save(u); };
+      const addSavingsAccount = () => save({ ...data, savings: [...(data.savings || []), { name: "New Account", holder: "Joint", balance: 0, interestRate: 0, subtitle: "" }] });
+      const savingsHolders = ["Joint", p1, p2];
+      const removeSavingsAccount = (i) => save({ ...data, savings: (data.savings || []).filter((_, j) => j !== i) });
+      const updateExtraIncome = (i, field, value) => { const u = { ...data, extraIncome: [...(data.extraIncome || [])] }; u.extraIncome[i] = { ...u.extraIncome[i], [field]: value }; save(u); };
+      const addExtraIncome = () => save({ ...data, extraIncome: [...(data.extraIncome || []), { name: "New Income", amount: 0, subtitle: "" }] });
+      const removeExtraIncome = (i) => save({ ...data, extraIncome: (data.extraIncome || []).filter((_, j) => j !== i) });
+      const reorderList = (key, oldIndex, newIndex) => { const items = [...(data[key] || [])]; const [moved] = items.splice(oldIndex, 1); items.splice(newIndex, 0, moved); save({ ...data, [key]: items }); };
+
+      const tabs = [
+        { id: "overview", label: "Overview" },
+        { id: "bills", label: "Bills" },
+        { id: "savings", label: "Savings" },
+        { id: "person1", label: p1 },
+        { id: "person2", label: p2 },
+      ];
+
+      // --- RENDER HELPERS ---
+      const SummaryCard = ({ label, amount, sub }) => (
+        React.createElement('div', { style: s.card },
+          React.createElement('div', { style: s.label }, label),
+          React.createElement('div', { className: 'font-mono', style: { fontSize: 20, fontWeight: 600, color: '#f1f5f9', marginTop: 4 } }, currency(amount)),
+          sub && React.createElement('div', { style: { fontSize: 10, color: '#64748b', marginTop: 4 } }, sub)
+        )
+      );
+
+      const PersonTab = ({ who, pay, payKey, personalTotal, left, expenses, color, borderColor, bgFrom, bgTo }) => (
+        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 16 } },
+          React.createElement('div', { style: s.cardAccent(bgFrom, bgTo, borderColor) },
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 } },
+              React.createElement('span', { style: { ...s.label } }, 'Take Home Pay'),
+              React.createElement(EditableAmount, { value: pay, onChange: (v) => save({ ...data, [payKey]: v }), className: 'font-mono', format: 'currency' })
+            ),
+            React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginTop: 12 } },
+              React.createElement('div', null, React.createElement('div', { style: s.label }, 'Bills Share'), React.createElement('div', { className: 'font-mono', style: { fontSize: 14, color: '#cbd5e1' } }, currency(householdTotal / 2))),
+              React.createElement('div', null, React.createElement('div', { style: s.label }, 'Personal'), React.createElement('div', { className: 'font-mono', style: { fontSize: 14, color: '#cbd5e1' } }, currency(personalTotal))),
+              React.createElement('div', null, React.createElement('div', { style: s.label }, 'Left Over'), React.createElement('div', { className: 'font-mono', style: { fontSize: 14, fontWeight: 600, color: left >= 0 ? '#34d399' : '#f87171' } }, currency(left)))
+            ),
+            React.createElement('div', { style: { fontSize: 10, color: '#64748b', marginTop: 4 } }, currency(left / 4) + ' per week')
+          ),
+          React.createElement('div', null,
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 } },
+              React.createElement('h3', { style: { fontSize: 14, fontWeight: 600, color: '#cbd5e1' } }, 'Personal Expenses'),
+              React.createElement('span', { className: 'font-mono', style: { fontSize: 14, color } }, currency(personalTotal))
+            ),
+            React.createElement(SortableList, { onReorder: (o, n) => reorderList(who + "Expenses", o, n) },
+              expenses.map((exp, i) =>
+                React.createElement(SwipeToDelete, { key: i, onDelete: () => removePersonalExpense(who, i) },
+                  React.createElement('div', { style: { ...s.row, alignItems: 'center' } },
+                    React.createElement(DragHandle),
+                    React.createElement('div', { style: { flex: 1, minWidth: 0, marginRight: 12 } },
+                      React.createElement(EditableName, { value: exp.name, onChange: (v) => updatePersonalExpense(who, i, "name", v) }),
+                      React.createElement(EditableSubtitle, { value: exp.subtitle, onChange: (v) => updatePersonalExpense(who, i, "subtitle", v) })
+                    ),
+                    React.createElement(EditableAmount, { value: exp.amount, onChange: (v) => updatePersonalExpense(who, i, "amount", v) })
+                  )
+                )
+              )
+            ),
+            React.createElement('button', { onClick: () => addPersonalExpense(who), style: { ...s.addBtn(color), marginTop: 8 } }, '+ Add Expense')
+          )
+        )
+      );
+
+      // --- TAB CONTENT ---
+      const renderOverview = () => (
+        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 16 } },
+          React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 } },
+            React.createElement(SummaryCard, { label: 'Total Income', amount: totalIncome }),
+            React.createElement(SummaryCard, { label: 'Total Bills', amount: totalExpenditure })
+          ),
+          // Income section
+          React.createElement('div', { style: s.card },
+            React.createElement('h3', { style: { ...s.label, marginBottom: 12 } }, 'Income'),
+            React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+              React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+                React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
+                  React.createElement(EditableName, { value: p1, onChange: (v) => save({ ...data, person1Name: v }) }),
+                  React.createElement('span', { style: { fontSize: 14, color: '#64748b' } }, "'s Pay")
+                ),
+                React.createElement(EditableAmount, { value: data.person1Pay || 0, onChange: (v) => save({ ...data, person1Pay: v }) })
+              ),
+              React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+                React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
+                  React.createElement(EditableName, { value: p2, onChange: (v) => save({ ...data, person2Name: v }) }),
+                  React.createElement('span', { style: { fontSize: 14, color: '#64748b' } }, "'s Pay")
+                ),
+                React.createElement(EditableAmount, { value: data.person2Pay || 0, onChange: (v) => save({ ...data, person2Pay: v }) })
+              ),
+              (data.extraIncome || []).length > 0 && React.createElement('div', { style: { borderTop: '1px solid rgba(51,65,85,0.5)', marginTop: 8, paddingTop: 8 } },
+                React.createElement('div', { style: { ...s.label, marginBottom: 6 } }, 'Additional Income'),
+                React.createElement(SortableList, { onReorder: (o, n) => reorderList('extraIncome', o, n) },
+                  (data.extraIncome || []).map((inc, i) =>
+                    React.createElement(SwipeToDelete, { key: i, onDelete: () => removeExtraIncome(i) },
+                      React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0' } },
+                        React.createElement(DragHandle),
+                        React.createElement('div', { style: { flex: 1, minWidth: 0, marginRight: 12 } },
+                          React.createElement(EditableName, { value: inc.name, onChange: (v) => updateExtraIncome(i, "name", v) }),
+                          React.createElement(EditableSubtitle, { value: inc.subtitle, onChange: (v) => updateExtraIncome(i, "subtitle", v) })
+                        ),
+                        React.createElement(EditableAmount, { value: inc.amount, onChange: (v) => updateExtraIncome(i, "amount", v) })
+                      )
+                    )
+                  )
+                )
+              ),
+              React.createElement('button', { onClick: addExtraIncome, style: { ...s.addBtn(), marginTop: 8 } }, '+ Add Income')
+            )
+          ),
+          // Per-person summary
+          React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 } },
+            ...[
+              { name: p1, total: p1BillShare, left: p1Left },
+              { name: p2, total: p2BillShare, left: p2Left }
+            ].map(p =>
+              React.createElement('div', { key: p.name, style: s.card },
+                React.createElement('div', { style: s.label }, p.name),
+                React.createElement('div', { className: 'font-mono', style: { fontSize: 18, fontWeight: 600, color: '#f1f5f9', marginTop: 4 } }, currency(p.total)),
+                React.createElement('div', { style: { fontSize: 10, color: '#64748b' } }, 'total outgoings'),
+                React.createElement('div', { className: 'font-mono', style: { fontSize: 14, marginTop: 8, fontWeight: 600, color: p.left >= 0 ? '#34d399' : '#f87171' } }, currency(p.left) + ' left'),
+                React.createElement('div', { style: { fontSize: 10, color: '#64748b' } }, currency(p.left / 4) + '/week')
+              )
+            )
+          ),
+          // Expenditure breakdown
+          React.createElement('div', { style: s.card },
+            React.createElement('h3', { style: { ...s.label, marginBottom: 12 } }, 'Expenditure Breakdown'),
+            ...[
+              { label: 'Household Bills', amount: householdTotal, color: '#f59e0b' },
+              { label: p1 + "'s Personal", amount: p1PersonalTotal, color: '#3b82f6' },
+              { label: p2 + "'s Personal", amount: p2PersonalTotal, color: '#ec4899' },
+            ].map(item =>
+              React.createElement('div', { key: item.label, style: { marginBottom: 8 } },
+                React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 } },
+                  React.createElement('span', { style: { color: '#94a3b8' } }, item.label),
+                  React.createElement('span', { className: 'font-mono', style: { color: '#cbd5e1' } }, currency(item.amount))
+                ),
+                React.createElement('div', { style: { height: 8, background: 'rgba(51,65,85,0.5)', borderRadius: 4, overflow: 'hidden' } },
+                  React.createElement('div', { style: { height: '100%', background: item.color, borderRadius: 4, width: `${(item.amount / totalExpenditure) * 100}%`, transition: 'width 0.3s' } })
+                )
+              )
+            )
+          ),
+          data.notes && React.createElement('div', { style: { fontSize: 12, color: '#64748b', fontStyle: 'italic', textAlign: 'center' } }, data.notes),
+          totalSavings > 0 && React.createElement('div', { style: s.cardAccent('rgba(16,185,129,0.1)', 'rgba(16,185,129,0.05)', 'rgba(16,185,129,0.2)') },
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+              React.createElement('div', null,
+                React.createElement('div', { style: s.label }, 'Total Savings'),
+                React.createElement('div', { className: 'font-mono', style: { fontSize: 18, fontWeight: 600, color: '#6ee7b7' } }, currency(totalSavings))
+              ),
+              React.createElement('div', { style: { textAlign: 'right' } },
+                React.createElement('div', { style: { fontSize: 12, color: '#64748b' } }, 'Earning'),
+                React.createElement('div', { className: 'font-mono', style: { fontSize: 14, color: '#34d399' } }, currency(annualInterest) + '/yr'),
+                React.createElement('div', { className: 'font-mono', style: { fontSize: 10, color: '#64748b' } }, currency(monthlyInterest) + '/mo')
+              )
+            )
+          )
+        )
+      );
+
+      const renderBills = () => (
+        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+          React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+            React.createElement('h2', { style: { fontSize: 14, fontWeight: 600, color: '#cbd5e1' } }, 'Household Bills'),
+            React.createElement('span', { className: 'font-mono', style: { fontSize: 14, color: '#fcd34d' } }, currency(householdTotal))
+          ),
+          React.createElement('div', { style: { fontSize: 10, color: '#64748b', marginBottom: 4 } }, `Split 50/50 — ${currency(householdTotal / 2)} each`),
+          React.createElement(SortableList, { onReorder: (o, n) => reorderList('householdBills', o, n) },
+            data.householdBills.map((bill, i) =>
+              React.createElement(SwipeToDelete, { key: i, onDelete: () => removeBill(i) },
+                React.createElement('div', { style: { ...s.row } },
+                  React.createElement(DragHandle),
+                  React.createElement('div', { style: { flex: 1, minWidth: 0, marginRight: 12 } },
+                    React.createElement(EditableName, { value: bill.name, onChange: (v) => updateBill(i, "name", v) }),
+                    React.createElement(EditableSubtitle, { value: bill.subtitle, onChange: (v) => updateBill(i, "subtitle", v) })
+                  ),
+                  React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 } },
+                    React.createElement(EditableAmount, { value: bill.amount, onChange: (v) => updateBill(i, "amount", v) }),
+                    React.createElement('span', { className: 'font-mono', style: { fontSize: 10, color: '#475569', width: 64, textAlign: 'right' } }, currency(bill.amount / 2) + ' ea')
+                  )
+                )
+              )
+            )
+          ),
+          React.createElement('button', { onClick: addBill, style: s.addBtn() }, '+ Add Bill')
+        )
+      );
+
+      const renderSavings = () => (
+        React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 16 } },
+          React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 } },
+            React.createElement('div', { style: s.cardAccent('rgba(16,185,129,0.2)', 'rgba(16,185,129,0.1)', 'rgba(16,185,129,0.3)') },
+              React.createElement('div', { style: s.label }, 'Total Savings'),
+              React.createElement('div', { className: 'font-mono', style: { fontSize: 20, fontWeight: 600, color: '#6ee7b7', marginTop: 4 } }, currency(totalSavings))
+            ),
+            React.createElement('div', { style: s.card },
+              React.createElement('div', { style: s.label }, 'Interest / Year'),
+              React.createElement('div', { className: 'font-mono', style: { fontSize: 20, fontWeight: 600, color: '#f1f5f9', marginTop: 4 } }, currency(annualInterest)),
+              React.createElement('div', { style: { fontSize: 10, color: '#64748b', marginTop: 2 } }, currency(monthlyInterest) + '/month')
+            )
+          ),
+          React.createElement(SortableList, { onReorder: (o, n) => reorderList('savings', o, n) },
+            (data.savings || []).map((account, i) => {
+              const holderColorList = [{ bg: 'rgba(245,158,11,0.2)', text: '#fcd34d' }, { bg: 'rgba(59,130,246,0.2)', text: '#93c5fd' }, { bg: 'rgba(236,72,153,0.2)', text: '#f9a8d4' }];
+              const holderIdx = savingsHolders.indexOf(account.holder);
+              const hc = holderColorList[holderIdx >= 0 ? holderIdx : 0];
+              return React.createElement(SwipeToDelete, { key: i, onDelete: () => removeSavingsAccount(i) },
+                React.createElement('div', { style: { ...s.row, flexDirection: 'column', alignItems: 'stretch' } },
+                  React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 } },
+                    React.createElement(DragHandle),
+                    React.createElement('div', { style: { flex: 1, minWidth: 0, marginRight: 12 } },
+                      React.createElement(EditableName, { value: account.name, onChange: (v) => updateSavingsAccount(i, "name", v) }),
+                      React.createElement(EditableSubtitle, { value: account.subtitle, onChange: (v) => updateSavingsAccount(i, "subtitle", v), placeholder: "Add provider..." })
+                    ),
+                    React.createElement('span', {
+                      onClick: () => { updateSavingsAccount(i, "holder", savingsHolders[(savingsHolders.indexOf(account.holder) + 1) % savingsHolders.length]); },
+                      style: { fontSize: 10, padding: '2px 8px', borderRadius: 12, background: hc.bg, color: hc.text, cursor: 'pointer', whiteSpace: 'nowrap' }
+                    }, account.holder)
+                  ),
+                  React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 16, marginTop: 8 } },
+                    React.createElement('div', { style: { flex: 1 } },
+                      React.createElement('div', { style: { fontSize: 10, color: '#64748b', marginBottom: 2 } }, 'Balance'),
+                      React.createElement(EditableAmount, { value: account.balance, onChange: (v) => updateSavingsAccount(i, "balance", v), className: 'font-mono' })
+                    ),
+                    React.createElement('div', { style: { width: 80 } },
+                      React.createElement('div', { style: { fontSize: 10, color: '#64748b', marginBottom: 2 } }, 'Interest'),
+                      React.createElement('div', { style: { display: 'flex', alignItems: 'center' } },
+                        React.createElement(EditableAmount, { value: account.interestRate, onChange: (v) => updateSavingsAccount(i, "interestRate", v), className: 'font-mono', format: 'number' }),
+                        React.createElement('span', { style: { color: '#64748b', fontSize: 12, marginLeft: 2 } }, '%')
+                      )
+                    ),
+                    React.createElement('div', { style: { width: 80, textAlign: 'right' } },
+                      React.createElement('div', { style: { fontSize: 10, color: '#64748b', marginBottom: 2 } }, 'Earns/yr'),
+                      React.createElement('div', { className: 'font-mono', style: { fontSize: 14, color: '#94a3b8' } }, currency(account.balance * (account.interestRate / 100)))
+                    )
+                  )
+                )
+              );
+            })
+          ),
+          React.createElement('button', { onClick: addSavingsAccount, style: s.addBtn() }, '+ Add Account')
+        )
+      );
+
+      // --- MAIN LAYOUT ---
+      return React.createElement('div', { style: { minHeight: '100vh', background: '#0f172a', color: '#e2e8f0' } },
+        // Header
+        React.createElement('div', { style: { background: 'rgba(30,41,59,0.8)', backdropFilter: 'blur(8px)', borderBottom: '1px solid rgba(51,65,85,0.5)', position: 'sticky', top: 0, zIndex: 10 } },
+          React.createElement('div', { style: { maxWidth: 512, margin: '0 auto', padding: '16px 16px 12px' } },
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 } },
+              React.createElement('div', null,
+                React.createElement('h1', { style: { fontSize: 18, fontWeight: 700, color: '#f1f5f9', letterSpacing: '-0.01em' } }, 'Household Budget'),
+                lastSaved && React.createElement('div', { style: { fontSize: 10, color: '#64748b', marginTop: 2 } }, 'Saved ' + lastSaved.toLocaleTimeString())
+              ),
+              React.createElement('div', { style: { textAlign: 'right' } },
+                React.createElement('div', { style: { fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#64748b' } }, 'Left over'),
+                React.createElement('div', { className: 'font-mono', style: { fontSize: 18, fontWeight: 700, color: totalLeft >= 0 ? '#34d399' : '#f87171' } }, currency(totalLeft)),
+                React.createElement('div', { style: { fontSize: 10, color: '#64748b' } }, currency(totalLeft / 4) + '/week')
+              )
+            ),
+            // Tabs
+            React.createElement('div', { style: { display: 'flex', gap: 4, background: 'rgba(15,23,42,0.5)', borderRadius: 12, padding: 4 } },
+              tabs.map(tab =>
+                React.createElement('button', { key: tab.id, onClick: () => setActiveTab(tab.id), style: s.tab(activeTab === tab.id) }, tab.label)
+              )
+            )
+          )
+        ),
+        // Content
+        React.createElement('div', { style: { maxWidth: 512, margin: '0 auto', padding: '20px 16px 80px' } },
+          activeTab === 'overview' && renderOverview(),
+          activeTab === 'bills' && renderBills(),
+          activeTab === 'savings' && renderSavings(),
+          activeTab === 'person1' && React.createElement(PersonTab, { who: 'person1', pay: data.person1Pay || 0, payKey: 'person1Pay', personalTotal: p1PersonalTotal, left: p1Left, expenses: data.person1Expenses || [], color: '#93c5fd', borderColor: 'rgba(59,130,246,0.2)', bgFrom: 'rgba(59,130,246,0.1)', bgTo: 'rgba(59,130,246,0.05)' }),
+          activeTab === 'person2' && React.createElement(PersonTab, { who: 'person2', pay: data.person2Pay || 0, payKey: 'person2Pay', personalTotal: p2PersonalTotal, left: p2Left, expenses: data.person2Expenses || [], color: '#f9a8d4', borderColor: 'rgba(236,72,153,0.2)', bgFrom: 'rgba(236,72,153,0.1)', bgTo: 'rgba(236,72,153,0.05)' })
+        )
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+  </script>
+</body>
+</html>
