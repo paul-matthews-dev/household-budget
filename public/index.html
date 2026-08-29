@@ -126,6 +126,36 @@
       const today = new Date(from.getFullYear(), from.getMonth(), from.getDate());
       return Math.round((date - today) / 86400000);
     };
+    // Paydays land on working days: a date falling on a weekend or an England &
+    // Wales bank holiday rolls back to the working day before (the 25th on a
+    // Saturday pays on the 24th). `holidays` is a Set of YYYY-MM-DD strings from
+    // /api/bank-holidays; an empty one degrades to weekends-only.
+    const NO_HOLIDAYS = new Set();
+    const isoDate = (date) => date.getFullYear() + '-' +
+      String(date.getMonth() + 1).padStart(2, '0') + '-' +
+      String(date.getDate()).padStart(2, '0');
+    const isWeekend = (date) => date.getDay() === 0 || date.getDay() === 6;
+    const backToWorkingDay = (date, holidays = NO_HOLIDAYS) => {
+      const d = new Date(date);
+      let guard = 0;
+      while ((isWeekend(d) || holidays.has(isoDate(d))) && guard++ < 30) d.setDate(d.getDate() - 1);
+      return d;
+    };
+    // A payday is a day-of-month, or 'last' for the last working day of the month.
+    const payDayOf = (value, fallback) => value === 'last' ? 'last'
+      : (typeof value === 'number' && value >= 1 && value <= 31 ? Math.round(value) : fallback);
+    const payDateIn = (payDay, year, month, holidays) => {
+      const lastDay = new Date(year, month + 1, 0).getDate();
+      return backToWorkingDay(new Date(year, month, payDay === 'last' ? lastDay : Math.min(payDay, lastDay)), holidays);
+    };
+    const nextPayDate = (payDay, holidays = NO_HOLIDAYS, from = new Date()) => {
+      const today = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+      const thisMonth = payDateIn(payDay, today.getFullYear(), today.getMonth(), holidays);
+      return thisMonth >= today ? thisMonth : payDateIn(payDay, today.getFullYear(), today.getMonth() + 1, holidays);
+    };
+    const payDayLabel = (payDay) => payDay === 'last' ? 'Last working day' : ordinal(payDay);
+    const dayMonth = (date) => date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+
     const relativeDay = (days) => days === 0 ? 'today' : days === 1 ? 'tomorrow' : 'in ' + days + ' days';
     const monthYear = (date) => date.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
 
@@ -140,6 +170,61 @@
         months++;
       }
       return balance >= target ? months : null;
+    };
+
+    const addMonths = (date, n) => new Date(date.getFullYear(), date.getMonth() + n, date.getDate());
+    const parseISODate = (value) => {
+      if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+      const [y, m, d] = value.split('-').map(Number);
+      const date = new Date(y, m - 1, d);
+      return isNaN(date.getTime()) ? null : date;
+    };
+    const fullDate = (date) => date.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+    const yearsMonths = (months) => {
+      const y = Math.floor(months / 12), m = months % 12;
+      if (!y) return m + (m === 1 ? ' month' : ' months');
+      if (!m) return y + (y === 1 ? ' year' : ' years');
+      return y + 'y ' + m + 'm';
+    };
+
+    // Whole months from one date to another — a payment on the 5th only counts
+    // once the 5th has come round again.
+    const monthsBetween = (from, to) =>
+      (to.getFullYear() - from.getFullYear()) * 12 + (to.getMonth() - from.getMonth()) -
+      (to.getDate() < from.getDate() ? 1 : 0);
+
+    // Run `months` payments and report what they bought. Used to split what has
+    // been paid so far into interest and capital.
+    const amortiseFor = (balance, annualRate, payment, months) => {
+      const monthlyRate = annualRate / 100 / 12;
+      let remaining = balance, interest = 0, paid = 0;
+      for (let i = 0; i < months && remaining > 0; i++) {
+        const charge = remaining * monthlyRate;
+        const due = Math.min(payment, remaining + charge);
+        interest += charge;
+        paid += due;
+        remaining = remaining + charge - due;
+      }
+      return { interest, paid, capital: paid - interest, remaining: Math.max(0, remaining) };
+    };
+
+    // Amortisation, run month by month rather than from a closed-form formula:
+    // interest follows the shrinking balance, so the total is the real one and
+    // an overpayment can simply be added to the payment. Returns null when the
+    // payment doesn't cover the monthly interest — the balance would grow.
+    const amortise = (balance, annualRate, payment) => {
+      if (!(balance > 0)) return { months: 0, interest: 0 };
+      if (!(payment > 0)) return null;
+      const monthlyRate = annualRate / 100 / 12;
+      if (payment <= balance * monthlyRate) return null;
+      let remaining = balance, interest = 0, months = 0;
+      while (remaining > 0 && months < 1200) {
+        const charge = remaining * monthlyRate;
+        interest += charge;
+        remaining = remaining + charge - payment;
+        months++;
+      }
+      return { months, interest };
     };
 
     // Bill categories. `id` is what lands in budget.json, so these ids are a
@@ -271,6 +356,54 @@
         title: set ? 'Change or clear the due date' : 'Set the day this bill leaves the account',
         style: { ...chipStyle(OTHER, set), color: set ? c.blue : c.faint, borderColor: set ? 'rgba(57,135,229,0.45)' : c.border, background: set ? 'rgba(57,135,229,0.14)' : 'transparent' },
       }, set ? '📅 ' + ordinal(value) : '📅 Due date');
+    }
+
+    function PayDayEditor({ value, onChange, holidaysKnown }) {
+      const [open, setOpen] = useState(false);
+      const ref = useRef(null);
+
+      useEffect(() => {
+        if (!open) return;
+        const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+        document.addEventListener('mousedown', onDown);
+        document.addEventListener('touchstart', onDown);
+        return () => {
+          document.removeEventListener('mousedown', onDown);
+          document.removeEventListener('touchstart', onDown);
+        };
+      }, [open]);
+
+      const isLast = value === 'last';
+      return React.createElement('div', { ref, style: { position: 'relative', display: 'inline-block' } },
+        React.createElement('button', {
+          onClick: () => setOpen(!open),
+          title: 'When this pay lands',
+          style: { ...chipStyle(OTHER, true), color: c.green, borderColor: 'rgba(25,158,112,0.5)', background: 'rgba(25,158,112,0.14)' },
+        }, '💷 ' + payDayLabel(value)),
+        open && React.createElement('div', {
+          style: { position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 30, width: 220, padding: 8, borderRadius: 14, background: '#111b30', border: `1px solid ${c.borderHi}`, boxShadow: '0 16px 36px rgba(3,7,18,0.65)', display: 'flex', flexDirection: 'column', gap: 8 }
+        },
+          React.createElement('button', {
+            onClick: () => { onChange('last'); setOpen(false); },
+            style: { ...chipStyle(OTHER, isLast), color: isLast ? c.green : c.dim, borderColor: isLast ? 'rgba(25,158,112,0.5)' : c.border, background: isLast ? 'rgba(25,158,112,0.14)' : 'transparent', justifyContent: 'flex-start', width: '100%' },
+          }, 'Last working day'),
+          React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+            React.createElement('span', { style: { fontSize: 12.5, color: c.dim, flex: 1 } }, 'Day of month'),
+            React.createElement('input', {
+              type: 'number', min: 1, max: 31, value: isLast ? '' : value, placeholder: '25',
+              onChange: (e) => {
+                const parsed = parseInt(e.target.value, 10);
+                if (!isNaN(parsed)) onChange(Math.min(31, Math.max(1, parsed)));
+              },
+              style: { width: 64, background: c.inset, border: `1px solid ${c.borderHi}`, borderRadius: 999, padding: '3px 10px', outline: 'none', color: c.text, fontSize: 16, fontFamily: "'JetBrains Mono', monospace" },
+            })
+          ),
+          React.createElement('div', { style: { ...s.hint, marginTop: 0, lineHeight: 1.45 } },
+            holidaysKnown
+              ? 'A payday on a weekend or an England & Wales bank holiday rolls back to the working day before.'
+              : 'A weekend payday rolls back to the Friday before. Bank holiday dates aren’t available right now.')
+        )
+      );
     }
 
     function AccountPicker({ accounts, selected, onToggle }) {
@@ -457,6 +590,27 @@
       }, value || placeholder);
     }
 
+    function EditableDate({ value, onChange, placeholder = 'Set date', tone = null }) {
+      const [editing, setEditing] = useState(false);
+      const date = parseISODate(value);
+
+      if (editing) {
+        return React.createElement('input', {
+          type: 'date', value: value || '', autoFocus: true,
+          onChange: (e) => onChange(e.target.value),
+          onBlur: () => setEditing(false),
+          onKeyDown: (e) => e.key === 'Enter' && setEditing(false),
+          style: { background: c.inset, border: `1px solid ${c.amber}`, borderRadius: 999, padding: '3px 10px', outline: 'none', color: c.text, fontSize: 16, fontFamily: 'inherit' },
+        });
+      }
+      const colour = tone || (date ? c.blue : null);
+      return React.createElement('button', {
+        onClick: () => setEditing(true),
+        title: 'Change the date',
+        style: { ...chipStyle(OTHER, Boolean(date)), color: date ? colour : c.faint, borderColor: date ? colour + '80' : c.border, background: date ? colour + '24' : 'transparent' },
+      }, '📅 ' + (date ? fullDate(date) : placeholder));
+    }
+
     // Lives *inside* the card it deletes from, as the trailing element of the
     // row. Two taps to delete: the first arms it for 3s.
     function DeleteButton({ onDelete, title = 'Remove' }) {
@@ -599,6 +753,18 @@
         }, 500);
       }, []);
 
+      // Bank holidays. Fetched once — the server caches them to disk and only
+      // refreshes daily, so this is cheap and works offline after the first run.
+      const [holidays, setHolidays] = useState(null);
+      useEffect(() => {
+        fetch('/api/bank-holidays')
+          .then(r => r.json())
+          .then(d => setHolidays(new Set((d && d.dates) || [])))
+          .catch(() => setHolidays(new Set()));
+      }, []);
+      const holidaySet = holidays || NO_HOLIDAYS;
+      const holidaysKnown = holidaySet.size > 0;
+
       // --- Backup & restore ---
       const [backups, setBackups] = useState(null);
       const [backupOpen, setBackupOpen] = useState(false);
@@ -728,6 +894,13 @@
         interestRate: isaCash.total > 0 ? (isaFreeCash * t212CashRate) / isaCash.total : 0,
       } : null;
       const goalAccounts = [...(data.savings || []).filter(a => a.id), ...(isaAccount ? [isaAccount] : [])];
+
+      const mortgage = data.mortgage || {};
+      const updateMortgage = (field, value) => save({ ...data, mortgage: { ...mortgage, [field]: value } });
+
+      // Paydays: person1 defaults to the last working day, person2 to the 25th.
+      const p1PayDay = payDayOf(data.person1PayDay, 'last');
+      const p2PayDay = payDayOf(data.person2PayDay, 25);
 
       const cashSavings = totalSavings + isaFreeCash;
       const totalAnnualInterest = annualInterest + isaCashInterest;
@@ -968,19 +1141,32 @@
             React.createElement('h3', { style: { ...s.label, marginBottom: 14 } }, 'Income'),
             React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
               ...[
-                { name: p1, nameKey: 'person1Name', payKey: 'person1Pay' },
-                { name: p2, nameKey: 'person2Name', payKey: 'person2Pay' },
-              ].map(person =>
-                React.createElement('div', { key: person.payKey, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 } },
-                  React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 } },
-                    React.createElement(EditableName, { value: person.name, onChange: (v) => save({ ...data, [person.nameKey]: v }) }),
-                    React.createElement('span', { style: { fontSize: 14, color: c.faint } }, "'s pay")
+                { name: p1, nameKey: 'person1Name', payKey: 'person1Pay', payDayKey: 'person1PayDay', payDay: p1PayDay },
+                { name: p2, nameKey: 'person2Name', payKey: 'person2Pay', payDayKey: 'person2PayDay', payDay: p2PayDay },
+              ].map(person => {
+                const payDate = nextPayDate(person.payDay, holidaySet);
+                const days = daysUntil(payDate);
+                return React.createElement('div', { key: person.payKey, style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 } },
+                  React.createElement('div', { style: { minWidth: 0 } },
+                    React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 } },
+                      React.createElement(EditableName, { value: person.name, onChange: (v) => save({ ...data, [person.nameKey]: v }) }),
+                      React.createElement('span', { style: { fontSize: 14, color: c.faint } }, "'s pay")
+                    ),
+                    React.createElement('div', { style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 6 } },
+                      React.createElement(PayDayEditor, {
+                        value: person.payDay,
+                        holidaysKnown,
+                        onChange: (v) => save({ ...data, [person.payDayKey]: v }),
+                      }),
+                      React.createElement('span', { style: { fontSize: 11.5, color: days <= 1 ? c.green : c.faint } },
+                        dayMonth(payDate) + ' · ' + relativeDay(days))
+                    )
                   ),
-                  React.createElement('span', { style: { fontSize: 16, fontWeight: 600, color: c.text } },
+                  React.createElement('span', { style: { fontSize: 16, fontWeight: 600, color: c.text, flexShrink: 0 } },
                     React.createElement(EditableAmount, { value: data[person.payKey] || 0, onChange: (v) => save({ ...data, [person.payKey]: v }) })
                   )
-                )
-              ),
+                );
+              }),
               (data.extraIncome || []).length > 0 && React.createElement('div', { style: { borderTop: `1px solid ${c.border}`, marginTop: 4, paddingTop: 14 } },
                 React.createElement('div', { style: { ...s.label, marginBottom: 10 } }, 'Additional Income'),
                 React.createElement(SortableList, { onReorder: (o, n) => reorderList('extraIncome', o, n) },
@@ -1119,7 +1305,201 @@
               );
             })
           ),
-          React.createElement('button', { onClick: addBill, style: s.addBtn() }, '+ Add Bill')
+          React.createElement('button', { onClick: addBill, style: s.addBtn() }, '+ Add Bill'),
+          renderMortgage()
+        );
+      };
+
+      // --- MORTGAGE ---
+      // The app keeps no statement history, so everything is derived: the
+      // balance is the original loan amortised over the payments made since the
+      // start date, unless it has been typed in by hand.
+      const renderMortgage = () => {
+        const rate = mortgage.rate || 0;
+        // The monthly payment is the household bill called "Mortgage" — one
+        // number, edited in one place. `mortgage.payment` is the fallback for a
+        // budget with no such bill.
+        const mortgageBill = data.householdBills.find((b) => /mortgage/i.test(b.name || ''));
+        const payment = mortgageBill ? (mortgageBill.amount || 0) : (mortgage.payment || 0);
+        const overpayment = mortgage.overpayment || 0;
+        const original = mortgage.originalAmount || 0;
+
+        // Payments made since the mortgage started, and what they bought. Runs
+        // from the original loan at today's rate, so a past rate change makes
+        // the split an estimate rather than a statement.
+        const start = parseISODate(mortgage.startDate);
+        const payments = start ? Math.max(0, monthsBetween(start, new Date())) : 0;
+        const history = start && original > 0 && payment > 0
+          ? amortiseFor(original, rate, payment, payments)
+          : null;
+
+        // Calculated unless the user has overridden it. `balanceManual` is what
+        // keeps a typed-in figure from being overwritten by the projection.
+        const manual = Boolean(mortgage.balanceManual);
+        const derived = history ? history.remaining : null;
+        const balance = manual || derived === null ? (mortgage.balance || 0) : derived;
+        const drift = manual && derived !== null ? balance - derived : 0;
+
+        const base = amortise(balance, rate, payment);
+        const boosted = overpayment > 0 ? amortise(balance, rate, payment + overpayment) : null;
+        const payoff = base && base.months > 0 ? addMonths(new Date(), base.months) : null;
+        const boostedPayoff = boosted && boosted.months > 0 ? addMonths(new Date(), boosted.months) : null;
+        const monthsSaved = base && boosted ? base.months - boosted.months : 0;
+        const interestSaved = base && boosted ? base.interest - boosted.interest : 0;
+
+        const paidOff = original > 0 ? Math.min(original, Math.max(0, original - balance)) : 0;
+        const paidPct = original > 0 ? (paidOff / original) * 100 : 0;
+
+        const expiry = parseISODate(mortgage.rateExpiry);
+        const expiryDays = expiry ? daysUntil(expiry) : null;
+        const expired = expiryDays !== null && expiryDays < 0;
+        const expirySoon = expiryDays !== null && expiryDays >= 0 && expiryDays <= 90;
+        const expiryTone = expired || expirySoon ? c.amber : c.blue;
+
+        return React.createElement('div', { style: s.card },
+          React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 } },
+            React.createElement('div', { style: { minWidth: 0 } },
+              React.createElement('div', { style: s.label }, 'Mortgage'),
+              React.createElement(EditableSubtitle, {
+                value: mortgage.lender, onChange: (v) => updateMortgage('lender', v), placeholder: 'Lender...',
+              })
+            ),
+            React.createElement('div', { style: { textAlign: 'right', flexShrink: 0 } },
+              React.createElement('div', { className: 'font-mono', style: { fontSize: 22, fontWeight: 700, color: c.text } },
+                React.createElement(EditableAmount, {
+                  value: balance,
+                  onChange: (v) => save({ ...data, mortgage: { ...mortgage, balance: v, balanceManual: true } }),
+                })
+              ),
+              React.createElement('div', { style: s.hint },
+                manual || derived === null ? 'left to pay' : 'left to pay · calculated'),
+              manual && derived !== null && React.createElement('button', {
+                onClick: () => save({ ...data, mortgage: { ...mortgage, balanceManual: false } }),
+                title: 'Go back to the calculated balance',
+                style: { ...chipStyle(OTHER, false), marginTop: 6, color: c.faint, background: 'transparent' },
+              }, '↺ Use ' + currency(derived))
+            )
+          ),
+
+          // Progress against the original loan
+          original > 0 && React.createElement('div', { style: { marginTop: 14 } },
+            React.createElement('div', { style: { height: 10, background: c.inset, borderRadius: 999, overflow: 'hidden', border: `1px solid ${c.border}` } },
+              React.createElement('div', { style: { height: '100%', width: paidPct + '%', borderRadius: 999, background: c.green, transition: 'width .3s' } })
+            ),
+            React.createElement('div', { className: 'font-mono', style: { ...s.hint, marginTop: 6 } },
+              currency(paidOff) + ' of ' + currency(original) + ' paid off · ' + paidPct.toFixed(0) + '%')
+          ),
+
+          React.createElement('div', { style: { ...s.divider, margin: '16px 0' } }),
+
+          // The three numbers the projection runs on
+          React.createElement('div', { style: s.grid(150) },
+            React.createElement('div', null,
+              React.createElement('div', { style: s.label }, 'Rate'),
+              React.createElement('div', { className: 'font-mono', style: { fontSize: 16, fontWeight: 600, color: c.text, marginTop: 6 } },
+                React.createElement(EditableAmount, { value: rate, onChange: (v) => updateMortgage('rate', v), format: 'number' }), '%')
+            ),
+            React.createElement('div', null,
+              React.createElement('div', { style: s.label }, 'Monthly payment'),
+              React.createElement('div', { className: 'font-mono', style: { fontSize: 16, fontWeight: 600, color: c.text, marginTop: 6 } },
+                mortgageBill
+                  ? currency(payment)
+                  : React.createElement(EditableAmount, { value: payment, onChange: (v) => updateMortgage('payment', v) })),
+              mortgageBill && React.createElement('div', { style: s.hint }, 'from the ' + mortgageBill.name + ' bill')
+            ),
+            React.createElement('div', null,
+              React.createElement('div', { style: s.label }, 'Originally borrowed'),
+              React.createElement('div', { className: 'font-mono', style: { fontSize: 16, fontWeight: 600, color: c.dim, marginTop: 6 } },
+                React.createElement(EditableAmount, { value: original, onChange: (v) => updateMortgage('originalAmount', v) }))
+            )
+          ),
+
+          // Started — what the payment count is measured from
+          React.createElement('div', { style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginTop: 16 } },
+            React.createElement('span', { style: { fontSize: 12.5, color: c.dim } }, 'Started'),
+            React.createElement(EditableDate, {
+              value: mortgage.startDate,
+              onChange: (v) => updateMortgage('startDate', v),
+              placeholder: 'Set date',
+            }),
+            start && React.createElement('span', { style: { fontSize: 11.5, color: c.faint } },
+              payments + (payments === 1 ? ' payment' : ' payments') + ' · ' + yearsMonths(payments) + ' in')
+          ),
+
+          // Rate expiry — the date worth remembering
+          React.createElement('div', { style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginTop: 10 } },
+            React.createElement('span', { style: { fontSize: 12.5, color: c.dim } }, 'Rate ends'),
+            React.createElement(EditableDate, {
+              value: mortgage.rateExpiry,
+              onChange: (v) => updateMortgage('rateExpiry', v),
+              placeholder: 'Set date',
+              tone: expiryTone,
+            }),
+            expiryDays !== null && React.createElement('span', { style: { fontSize: 11.5, color: expired || expirySoon ? c.amber : c.faint } },
+              expired ? 'Expired — you may be on the standard rate'
+                : expiryDays === 0 ? 'Ends today'
+                : 'in ' + yearsMonths(Math.round(expiryDays / 30.44)) + ' (' + expiryDays + ' days)')
+          ),
+
+          React.createElement('div', { style: { ...s.divider, margin: '16px 0' } }),
+
+          // Paid so far, from the start date and the bill's payment
+          history && payments > 0 && React.createElement('div', { style: { marginBottom: 16 } },
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 } },
+              React.createElement('span', { style: { fontSize: 14, color: c.dim } }, 'Paid so far'),
+              React.createElement('span', { className: 'font-mono', style: { fontSize: 18, fontWeight: 600, color: c.text } }, currency(history.paid))
+            ),
+            React.createElement('div', { className: 'font-mono', style: { ...s.hint, marginTop: 6 } },
+              currency(history.interest) + ' interest · ' + currency(history.capital) + ' off the loan'),
+            React.createElement('div', { style: { ...s.hint, lineHeight: 1.5 } },
+              'Estimated from ' + payments + ' payments of ' + currency(payment) + ' at ' + rate + '%' +
+              (manual && Math.abs(drift) >= 500
+                ? ' — ' + currency(Math.abs(drift)) + (drift > 0 ? ' more' : ' less') + ' than the balance you entered, so a rate change or overpayment has moved it.'
+                : '.')),
+            React.createElement('div', { style: { ...s.divider, margin: '16px 0' } })
+          ),
+
+          // Projection
+          !base
+            ? React.createElement('div', { style: { fontSize: 12.5, color: c.dim, lineHeight: 1.5 } },
+                payment > 0 && balance > 0
+                  ? 'That payment doesn’t cover the interest at ' + rate + '% — the balance would grow rather than clear.'
+                  : 'Add the balance, rate and monthly payment to project a payoff date.')
+            : base.months === 0
+              ? React.createElement('div', { style: { fontSize: 13, color: c.green } }, '🎉 Nothing left to pay')
+              : React.createElement('div', null,
+                  React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 } },
+                    React.createElement('span', { style: { fontSize: 14, color: c.dim } }, 'Paid off'),
+                    React.createElement('span', { className: 'font-mono', style: { fontSize: 18, fontWeight: 600, color: c.text } }, monthYear(payoff))
+                  ),
+                  React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, marginTop: 6 } },
+                    React.createElement('span', { style: { fontSize: 12.5, color: c.faint } }, yearsMonths(base.months) + ' to go'),
+                    React.createElement('span', { className: 'font-mono', style: { fontSize: 12.5, color: c.faint } },
+                      currency(base.interest) + ' interest · ' + currency(balance + base.interest) + ' total')
+                  )
+                ),
+
+          // Overpayment calculator
+          base && base.months > 0 && React.createElement('div', { style: { marginTop: 16, padding: 14, borderRadius: 14, background: c.inset, border: `1px solid ${c.border}` } },
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 } },
+              React.createElement('span', { style: { fontSize: 13, color: c.dim } }, 'Overpay each month'),
+              React.createElement('span', { className: 'font-mono', style: { fontSize: 16, fontWeight: 600, color: overpayment > 0 ? c.green : c.dim } },
+                React.createElement(EditableAmount, { value: overpayment, onChange: (v) => updateMortgage('overpayment', v) })
+              )
+            ),
+            overpayment > 0 && boosted && React.createElement('div', { style: { marginTop: 10 } },
+              React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 } },
+                React.createElement('span', { style: { fontSize: 13, color: c.dim } }, 'Paid off'),
+                React.createElement('span', { className: 'font-mono', style: { fontSize: 15, fontWeight: 600, color: c.green } }, monthYear(boostedPayoff))
+              ),
+              React.createElement('div', { style: { fontSize: 12.5, color: c.green, marginTop: 6, lineHeight: 1.5 } },
+                yearsMonths(monthsSaved) + ' sooner · saves ' + currency(interestSaved) + ' in interest'),
+              React.createElement('div', { style: { ...s.hint, lineHeight: 1.5 } },
+                'Paying ' + currency(payment + overpayment) + '/mo. Check your lender’s annual overpayment limit before committing.')
+            ),
+            overpayment === 0 && React.createElement('div', { style: { ...s.hint, lineHeight: 1.5 } },
+              'Tap the amount to see what an overpayment takes off the term.')
+          )
         );
       };
 
@@ -1142,6 +1522,7 @@
         }
 
         const hasFigures = Boolean(t212.cash);
+        const hasFreeCash = Math.round(isaFreeCash * 100) !== 0;
         const asOf = t212.fetchedAt ? new Date(t212.fetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null;
         const positions = t212.positions || [];
 
@@ -1163,8 +1544,9 @@
           t212.error && React.createElement('div', { style: { fontSize: 12.5, color: '#fecdd3', background: 'rgba(244,63,94,0.12)', border: '1px solid rgba(244,63,94,0.3)', borderRadius: 10, padding: '8px 12px', marginBottom: 16 } }, t212.error),
 
           hasFigures && React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 14 } },
-            // Uninvested cash + the rate it earns
-            React.createElement('div', null,
+            // Uninvested cash + the rate it earns. Hidden when it rounds to
+            // zero — an all-invested ISA has nothing to say here.
+            hasFreeCash && React.createElement('div', null,
               React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 } },
                 React.createElement('span', { style: { fontSize: 14, color: c.dim } }, 'Uninvested cash'),
                 React.createElement('span', { className: 'font-mono', style: { fontSize: 18, fontWeight: 600, color: c.green } }, currency(isaFreeCash))
@@ -1183,7 +1565,7 @@
                 'Trading 212 doesn’t publish the cash interest rate over the API — tap the rate to set it.')
             ),
 
-            React.createElement('div', { style: s.divider }),
+            hasFreeCash && React.createElement('div', { style: s.divider }),
 
             // Invested
             React.createElement('div', null,
@@ -1202,6 +1584,17 @@
             React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 } },
               React.createElement('span', { style: s.label }, 'Account total'),
               React.createElement('span', { className: 'font-mono', style: { fontSize: 19, fontWeight: 700, color: c.text } }, currency(t212.cash.total))
+            ),
+
+            // With no uninvested cash the block above is hidden, so the rate
+            // still needs somewhere to live — it applies again the moment cash
+            // lands in the account.
+            !hasFreeCash && React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: c.faint } },
+              React.createElement('span', null, 'No uninvested cash · rate'),
+              React.createElement('span', { style: { color: c.dim } },
+                React.createElement(EditableAmount, { value: t212CashRate, onChange: (v) => save({ ...data, t212CashRate: v }), format: 'number' })
+              ),
+              React.createElement('span', null, '%')
             ),
 
             // Holdings, collapsed by default

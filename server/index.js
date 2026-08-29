@@ -2,6 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const trading212 = require('./trading212');
+const bankHolidays = require('./bankholidays');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -29,8 +30,13 @@ const DEFAULT_DATA = {
   ],
   person1Pay: 0,
   person2Pay: 0,
+  // Day of month the pay lands, or 'last' for the last working day.
+  person1PayDay: "last",
+  person2PayDay: 25,
   savings: [],
   goals: [],
+  // Projected from the balance, not from payment history.
+  mortgage: { lender: "", balance: 0, balanceManual: false, originalAmount: 0, rate: 0, payment: 0, overpayment: 0, startDate: "", rateExpiry: "" },
   t212CashRate: 0,
   extraIncome: [],
   notes: "",
@@ -93,6 +99,9 @@ function listBackups() {
 const num = (v, fallback = 0) => (typeof v === 'number' && isFinite(v) ? v : fallback);
 const str = (v, fallback = '') => (typeof v === 'string' ? v : fallback);
 const list = (v) => (Array.isArray(v) ? v : []);
+const isoDay = (v) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '');
+const payDay = (v, fallback) =>
+  v === 'last' ? 'last' : (typeof v === 'number' && isFinite(v) && v >= 1 && v <= 31 ? Math.round(v) : fallback);
 
 function sanitise(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
@@ -102,6 +111,8 @@ function sanitise(input) {
     person2Name: str(input.person2Name, DEFAULT_DATA.person2Name),
     person1Pay: num(input.person1Pay),
     person2Pay: num(input.person2Pay),
+    person1PayDay: payDay(input.person1PayDay, DEFAULT_DATA.person1PayDay),
+    person2PayDay: payDay(input.person2PayDay, DEFAULT_DATA.person2PayDay),
     splitPercent: Math.min(100, Math.max(0, num(input.splitPercent, 50))),
     t212CashRate: num(input.t212CashRate),
     notes: str(input.notes),
@@ -124,6 +135,17 @@ function sanitise(input) {
       interestRate: num(a && a.interestRate),
       subtitle: str(a && a.subtitle),
     })),
+    mortgage: {
+      lender: str(input.mortgage && input.mortgage.lender),
+      balance: num(input.mortgage && input.mortgage.balance),
+      balanceManual: input.mortgage && input.mortgage.balanceManual === true,
+      originalAmount: num(input.mortgage && input.mortgage.originalAmount),
+      rate: num(input.mortgage && input.mortgage.rate),
+      payment: num(input.mortgage && input.mortgage.payment),
+      overpayment: num(input.mortgage && input.mortgage.overpayment),
+      startDate: isoDay(input.mortgage && input.mortgage.startDate),
+      rateExpiry: isoDay(input.mortgage && input.mortgage.rateExpiry),
+    },
     goals: list(input.goals).map((g) => ({
       id: str(g && g.id) || Math.random().toString(36).slice(2, 10),
       name: str(g && g.name, 'Untitled'),
@@ -227,6 +249,11 @@ app.post('/api/restore', (req, res) => {
     console.error('Error restoring budget:', err);
     res.status(400).json({ error: 'Could not read that file' });
   }
+});
+
+// England & Wales bank holidays, so a payday can roll back off one.
+app.get('/api/bank-holidays', async (req, res) => {
+  res.json(await bankHolidays.getHolidays({ refresh: req.query.refresh === '1' }));
 });
 
 // Trading 212 ISA snapshot. Read-only, cached server-side; the API key stays here.
