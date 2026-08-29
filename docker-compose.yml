@@ -10,6 +10,11 @@ services:
     environment:
       - PORT=3000
       - DATA_FILE=/data/budget.json
+      # Read-only Trading 212 API key, from a .env file beside this compose file.
+      - T212_API_KEY=${T212_API_KEY:-}
+      - T212_API_SECRET=${T212_API_SECRET:-}
+      - T212_ENV=${T212_ENV:-live}
+      - T212_CACHE_TTL=${T212_CACHE_TTL:-300}
 
 volumes:
   budget_data:
